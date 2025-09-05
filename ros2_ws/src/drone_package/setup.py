@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mavsdk_node = drone_package.mavsdk_node:main',
+            'drone_state_machine_node = drone_package.drone_state_machine_node:main',
         ],
     },
 )

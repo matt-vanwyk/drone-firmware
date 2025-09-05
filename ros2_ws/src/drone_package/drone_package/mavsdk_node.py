@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import time
 import asyncio
 import threading
 import rclpy
 from rclpy.node import Node
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
+from drone_interfaces.msg import DroneState
 
 # Using friend's threading pattern for asyncio/ROS2 integration
 async def spin(node: Node):
@@ -23,18 +25,39 @@ async def spin(node: Node):
         node.get_logger().info("Waiting for ROS 2 spin thread to finish")
         spin_thread.join()
 
-class BasicMAVSDKNode(Node):
+class MAVSDKNode(Node):
     def __init__(self):
         super().__init__('basic_mavsdk_node')
         self.drone = System()  # Create MAVSDK system
-        self.get_logger().info('Basic MAVSDK Node started')
+
+        # Publisher for drone state
+        self.state_publisher = self.create_publisher(DroneState, 'drone/state', 10)
+
+        # Telemetry Variables
+        self.position = None
+        self.armed = False
+        self.flight_mode = None
+        self.battery = None
+        self.in_air = False
+        self.num_satellites = None
+        self.landed_state = None
+        self.velocity = None
+        self.heading = None
+        self.mission_complete = False
+
+        self.get_logger().info('MAVSDK Node started')
         self.loop = asyncio.get_event_loop()
+
+    # ASYNC METHODS START HERE
+    ##########################################################
 
     async def start(self):
         """Initialize connection and run mission"""
         await self.connect_to_drone()
-        await self.test_basic_telemetry()
-        await self.run_waypoint_mission()
+        await self.start_telemetry_streams()
+
+        # Create timer to publish telemetry
+        self.create_timer(0.5, self.publish_telemetry)
 
     async def connect_to_drone(self):
         try:
@@ -49,214 +72,151 @@ class BasicMAVSDKNode(Node):
         except Exception as e:
             self.get_logger().error(f'Connection failed: {e}')
 
-    async def test_basic_telemetry(self):
-        """Test basic telemetry retrieval"""
+    async def start_telemetry_streams(self):
+        """Start all telemetry streams as concurrent tasks"""
         try:
-            # Get one sample of each telemetry type
-            async for health in self.drone.telemetry.health():
-                self.get_logger().info(f'Health: {health}')
-                break
-            
-            async for battery in self.drone.telemetry.battery():
-                self.get_logger().info(f'Battery: {battery.voltage_v:.1f}V, {battery.remaining_percent:.0f}%')
-                break
-            
+            self.get_logger().info('Starting telemetry streams...')
+
+            # Start all telemetry tasks 
+            self.loop.create_task(self.update_position())
+            self.loop.create_task(self.update_armed_state())
+            self.loop.create_task(self.update_flight_mode())
+            self.loop.create_task(self.update_battery_state())
+            self.loop.create_task(self.update_in_air())
+            self.loop.create_task(self.update_num_satellites())
+            self.loop.create_task(self.update_landed_state())
+            self.loop.create_task(self.update_velocity())
+            self.loop.create_task(self.update_drone_heading())
+
+            await asyncio.sleep(2.0)  # Allow some time for initial data to be received
+            self.get_logger().info('Telemetry streams started.')
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to start telemetry streams: {e}')
+
+    # Telemetry update methods
+    async def update_position(self):
+        try:
+            async for position in self.drone.telemetry.position():
+                self.position = position
+        except Exception as e:
+            self.get_logger().error(f"Error in position update: {str(e)}")
+
+    async def update_armed_state(self):
+        try:
+            async for armed in self.drone.telemetry.armed():
+                self.armed = armed
+        except Exception as e:
+            self.get_logger().error(f"Error in armed state update: {str(e)}")
+
+    async def update_flight_mode(self):
+        try:
             async for flight_mode in self.drone.telemetry.flight_mode():
-                self.get_logger().info(f'Flight mode: {flight_mode}')
-                break
-            
-            async for gps_info in self.drone.telemetry.gps_info():
-                self.get_logger().info(f'GPS: {gps_info.num_satellites} satellites, fix: {gps_info.fix_type}')
-                break
-            
-            async for position in self.drone.telemetry.position():
-                self.get_logger().info(f'Position: lat={position.latitude_deg:.6f}, lon={position.longitude_deg:.6f}, alt={position.relative_altitude_m:.1f}m')
-                break
-            
-            self.get_logger().info('Basic telemetry test completed successfully!')
-            
+                self.flight_mode = flight_mode
         except Exception as e:
-            self.get_logger().error(f'Telemetry test failed: {e}')
+            self.get_logger().error(f"Error in flight mode update: {str(e)}")
 
-    async def run_waypoint_mission(self):
-        """Create and execute a waypoint mission"""
+    async def update_battery_state(self):
         try:
-            self.get_logger().info('Starting waypoint mission...')
-            
-            # Wait for global position estimate
-            self.get_logger().info('Waiting for global position estimate...')
-            async for health in self.drone.telemetry.health():
-                if health.is_global_position_ok and health.is_home_position_ok:
-                    self.get_logger().info('Global position OK')
-                    break
-            
-            # Get current position to create waypoints relative to home
-            home_position = None
-            async for position in self.drone.telemetry.position():
-                home_position = position
-                self.get_logger().info(f'Home position: {position.latitude_deg:.6f}, {position.longitude_deg:.6f}')
-                break
-            
-            if not home_position:
-                self.get_logger().error('Could not get home position')
-                return
-            
-            # Create mission items (waypoints around home position)
-            mission_items = []
-            
-            # Takeoff to 20m
-            mission_items.append(MissionItem(
-                home_position.latitude_deg,
-                home_position.longitude_deg,
-                20,  # altitude in meters
-                10,  # speed in m/s
-                True,  # is_fly_through
-                float('nan'),  # gimbal_pitch_deg
-                float('nan'),  # gimbal_yaw_deg
-                MissionItem.CameraAction.NONE,
-                float('nan'),  # loiter_time_s
-                float('nan'),  # camera_photo_interval_s
-                float('nan'),  # acceptance_radius_m
-                float('nan'),  # yaw_deg
-                float('nan'),  # camera_photo_distance_m
-                MissionItem.VehicleAction.NONE  # vehicle_action
-            ))
-            
-            # Waypoint 1: North 100m
-            mission_items.append(MissionItem(
-                home_position.latitude_deg + 0.0009,  # ~100m north
-                home_position.longitude_deg,
-                20,
-                10,
-                True,
-                float('nan'),
-                float('nan'),
-                MissionItem.CameraAction.NONE,
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                MissionItem.VehicleAction.NONE
-            ))
-            
-            # Waypoint 2: East 100m
-            mission_items.append(MissionItem(
-                home_position.latitude_deg + 0.0009,
-                home_position.longitude_deg + 0.0012,  # ~100m east
-                20,
-                10,
-                True,
-                float('nan'),
-                float('nan'),
-                MissionItem.CameraAction.NONE,
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                MissionItem.VehicleAction.NONE
-            ))
-            
-            # Waypoint 3: South (back toward home)
-            mission_items.append(MissionItem(
-                home_position.latitude_deg,
-                home_position.longitude_deg + 0.0012,
-                20,
-                10,
-                True,
-                float('nan'),
-                float('nan'),
-                MissionItem.CameraAction.NONE,
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                MissionItem.VehicleAction.NONE
-            ))
-            
-            # Waypoint 4: Return to home
-            mission_items.append(MissionItem(
-                home_position.latitude_deg,
-                home_position.longitude_deg,
-                20,
-                10,
-                True,
-                float('nan'),
-                float('nan'),
-                MissionItem.CameraAction.NONE,
-                5.0,  # loiter for 5 seconds
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                float('nan'),
-                MissionItem.VehicleAction.NONE
-            ))
-            
-            # Create mission plan
-            mission_plan = MissionPlan(mission_items)
-            
-            # Upload mission
-            self.get_logger().info('Uploading mission...')
-            await self.drone.mission.upload_mission(mission_plan)
-            self.get_logger().info('Mission uploaded successfully!')
-            
-            # Arm the drone
-            self.get_logger().info('Arming...')
-            await self.drone.action.arm()
-            self.get_logger().info('Armed!')
-            
-            # Start mission
-            self.get_logger().info('Starting mission...')
-            await self.drone.mission.start_mission()
-            self.get_logger().info('Mission started!')
-            
-            # Monitor mission progress
-            await self.monitor_mission()
-            
+            async for battery in self.drone.telemetry.battery():
+                self.battery = battery
         except Exception as e:
-            self.get_logger().error(f'Mission failed: {e}')
+            self.get_logger().error(f"Error in battery state update: {str(e)}")
 
-    async def monitor_mission(self):
-        """Monitor mission progress and provide updates"""
+    async def update_in_air(self):
         try:
-            self.get_logger().info('Monitoring mission progress...')
-            
-            # Monitor mission progress
-            async for mission_progress in self.drone.mission.mission_progress():
-                self.get_logger().info(f'Mission progress: {mission_progress.current}/{mission_progress.total}')
-                
-                # Also log current position
-                async for position in self.drone.telemetry.position():
-                    self.get_logger().info(f'Current position: lat={position.latitude_deg:.6f}, lon={position.longitude_deg:.6f}, alt={position.relative_altitude_m:.1f}m')
-                    break
-                
-                # Check if mission is complete
-                if mission_progress.current == mission_progress.total:
-                    self.get_logger().info('Mission completed!')
-                    break
-            
-            # Land the drone
-            self.get_logger().info('Landing...')
-            await self.drone.action.land()
-            
-            # Wait for landing
             async for in_air in self.drone.telemetry.in_air():
-                if not in_air:
-                    self.get_logger().info('Landed successfully!')
-                    break
-            
-            # Disarm
-            await self.drone.action.disarm()
-            self.get_logger().info('Disarmed!')
-            
+                self.in_air = in_air
         except Exception as e:
-            self.get_logger().error(f'Mission monitoring failed: {e}')
+            self.get_logger().error(f"Error in in-air state update: {str(e)}")
+
+    async def update_num_satellites(self):
+        try:
+            async for gps_info in self.drone.telemetry.gps_info():
+                self.num_satellites = gps_info
+        except Exception as e:
+            self.get_logger().error(f"Error in GPS info update: {str(e)}")   
+            
+    async def update_landed_state(self):
+        try:
+            async for landed_state in self.drone.telemetry.landed_state():
+                self.landed_state = landed_state
+        except Exception as e:
+            self.get_logger().error(f"Error in landed state update: {str(e)}")    
+            
+    async def update_velocity(self):
+        try:
+            async for velocity in self.drone.telemetry.velocity_ned():
+                self.velocity = velocity
+        except Exception as e:
+            self.get_logger().error(f"Error in velocity update: {str(e)}")
+    
+    async def update_drone_heading(self):
+        try:
+            async for heading in self.drone.telemetry.heading():
+                self.heading = heading
+        except Exception as e:
+            self.get_logger().error(f"Error in heading update: {str(e)}")
+
+    ##########################################################
+    # ASYNC METHODS END HERE
+
+    def publish_telemetry(self):
+        """Publish telemetry as DroneState message"""
+        # Only publish if we have basic position data
+        if not self.position:
+            return
+
+        try:
+            state_msg = DroneState()
+
+            # Header with timestamp
+            state_msg.header.stamp = self.get_clock().now().to_msg()
+
+            # Position Data
+            state_msg.latitude = self.position.latitude_deg
+            state_msg.longitude = self.position.longitude_deg
+            state_msg.altitude = self.position.relative_altitude_m
+
+            # Flight State
+            state_msg.armed = self.armed
+            state_msg.flight_mode = str(self.flight_mode) if self.flight_mode else "UNKNOWN"
+            state_msg.is_in_air = self.in_air
+            state_msg.landed_state = str(self.landed_state) if self.landed_state else "UNKNOWN"
+
+            # GPS Info and Power
+            state_msg.num_satellites = self.num_satellites.num_satellites if self.num_satellites else 0
+            state_msg.battery_percentage = self.battery.remaining_percent if self.battery else 0.0
+
+            # Motion Data
+            if self.velocity:
+                state_msg.velocity_x = self.velocity.north_m_s
+                state_msg.velocity_y = self.velocity.east_m_s
+                state_msg.velocity_z = self.velocity.down_m_s
+            else:
+                state_msg.velocity_x = 0.0
+                state_msg.velocity_y = 0.0
+                state_msg.velocity_z = 0.0
+
+            state_msg.current_yaw = self.heading.heading_deg if self.heading else 0.0
+
+            # Mission Status
+            state_msg.mission_complete = self.mission_complete
+
+            # Add drone ID
+            if hasattr(state_msg, 'drone_id'):
+                state_msg.drone_id = "drone_001"
+
+            self.state_publisher.publish(state_msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Error publishing telemetry: {str(e)}")
+            return
 
 def main():
     rclpy.init()
-    node = BasicMAVSDKNode()
+    node = MAVSDKNode()
+
     loop = asyncio.get_event_loop()
     loop.run_until_complete(node.start())
     
