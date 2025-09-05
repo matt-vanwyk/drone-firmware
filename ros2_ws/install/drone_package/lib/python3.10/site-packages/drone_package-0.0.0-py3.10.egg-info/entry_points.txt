@@ -1,0 +1,3 @@
+[console_scripts]
+mavsdk_node = drone_package.mavsdk_node:main
+
