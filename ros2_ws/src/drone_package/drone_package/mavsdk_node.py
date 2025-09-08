@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
-from drone_interfaces.msg import DroneState
+from shared_interfaces.msg import DroneState
 
 # Using friend's threading pattern for asyncio/ROS2 integration
 async def spin(node: Node):

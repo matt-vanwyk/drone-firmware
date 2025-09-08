@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from statemachine import State, StateMachine
-from drone_interfaces.msg import DroneState
+from shared_interfaces.msg import DroneState
 
 class DroneStateMachine(StateMachine):
     """State machine definitions"""
