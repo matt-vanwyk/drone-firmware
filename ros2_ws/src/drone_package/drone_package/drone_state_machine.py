@@ -93,31 +93,24 @@ class DroneStateMachineNode(Node):
         # Check each critical field
         if self.drone_state.latitude != -500.0 and not self.telemetry_ready['latitude']:
             self.telemetry_ready['latitude'] = True
-            self.get_logger().info('Latitude data is now valid')
 
         if self.drone_state.longitude != -500.0 and not self.telemetry_ready['longitude']:
             self.telemetry_ready['longitude'] = True
-            self.get_logger().info('Longitude data is now valid')
-
+    
         if self.drone_state.altitude != -500.0 and not self.telemetry_ready['altitude']:
             self.telemetry_ready['altitude'] = True
-            self.get_logger().info('Altitude data is now valid')
 
         if self.drone_state.battery_percentage != -500.0 and not self.telemetry_ready['battery_percentage']:
             self.telemetry_ready['battery_percentage'] = True
-            self.get_logger().info('Battery data is now valid')
 
         if self.drone_state.num_satellites != -500 and not self.telemetry_ready['num_satellites']:
             self.telemetry_ready['num_satellites'] = True
-            self.get_logger().info('GPS satellite data is now valid')
 
         if self.drone_state.flight_mode != '' and not self.telemetry_ready['flight_mode']:
             self.telemetry_ready['flight_mode'] = True
-            self.get_logger().info('Flight mode data is now valid')
 
         if self.drone_state.landed_state != '' and not self.telemetry_ready['landed_state']:
             self.telemetry_ready['landed_state'] = True
-            self.get_logger().info('Landed state data is now valid')
 
         # Check if all critical telemetry is ready
         critical_fields = ['latitude', 'longitude', 'altitude', 'battery_percentage', 'num_satellites']
@@ -128,7 +121,6 @@ class DroneStateMachineNode(Node):
             self.get_logger().info('All critical telemetry data is now valid')
             
         return self.telemetry_valid
-
 
     def telemetry_callback(self, msg):
         """Process incoming telemetry and update state machine"""
