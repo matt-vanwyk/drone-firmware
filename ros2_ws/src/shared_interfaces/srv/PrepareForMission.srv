@@ -1,0 +1,10 @@
+# Request
+string mission_id
+Waypoint[] waypoints
+---
+# Response
+bool success
+string error_message
+float64 battery_percentage
+int32 num_satellites
+string drone_state

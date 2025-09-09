@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from statemachine import State, StateMachine
 from shared_interfaces.msg import DroneState
+from shared_interfaces.srv import PrepareForMission
 from drone_interfaces.msg import Telemetry
 
 class DroneStateMachine(StateMachine):
@@ -38,6 +39,13 @@ class DroneStateMachineNode(Node):
         self.drone_state_publisher = self.create_publisher(DroneState, 'drone/state', 10)
         self.create_timer(1.0, self.publish_drone_state)
 
+        # Service Server Declarations (Base_station_state_machine communication)
+        self.prepare_mission_service = self.create_service(
+            PrepareForMission,
+            'drone/prepare_for_mission',
+            self.handle_prepare_for_mission
+        )
+
         # Initialize DroneState attributes
         self.drone_state = DroneState()
         self.drone_state.latitude = -500.0
@@ -55,14 +63,75 @@ class DroneStateMachineNode(Node):
         self.drone_state.current_yaw = -500.0
         self.drone_state.mission_complete = False
 
+        # THRESHOLDS TO BE PLACED IN CONFIG FILE LATER?
+        self.BATTERY_CHARGED_THRESHOLD = 90.0
+        self.BATTERY_DEAD_THRESHOLD = 20.0
+        self.SATELLITES_LOCKED_THRESHOLD = 10
+
+        # Telemetry validation flags
         self.received_first_telemetry_flag = False
+        self.telemetry_valid = False
+
+        # Dictionary to track if all topics are ready
+        self.telemetry_ready = {
+            'latitude': False,
+            'longitude': False,
+            'altitude': False,
+            'battery_percentage': False,
+            'num_satellites': False,
+            'flight_mode': False,
+            'landed_state': False
+        }
 
         self.get_logger().info('Drone State Machine started - waiting for telemetry...')
+    
+    def check_telemetry_validity(self):
+        """Check if received telemetry data is valid"""
+        if not self.received_first_telemetry_flag:
+            return False
+            
+        # Check each critical field
+        if self.drone_state.latitude != -500.0 and not self.telemetry_ready['latitude']:
+            self.telemetry_ready['latitude'] = True
+            self.get_logger().info('Latitude data is now valid')
+
+        if self.drone_state.longitude != -500.0 and not self.telemetry_ready['longitude']:
+            self.telemetry_ready['longitude'] = True
+            self.get_logger().info('Longitude data is now valid')
+
+        if self.drone_state.altitude != -500.0 and not self.telemetry_ready['altitude']:
+            self.telemetry_ready['altitude'] = True
+            self.get_logger().info('Altitude data is now valid')
+
+        if self.drone_state.battery_percentage != -500.0 and not self.telemetry_ready['battery_percentage']:
+            self.telemetry_ready['battery_percentage'] = True
+            self.get_logger().info('Battery data is now valid')
+
+        if self.drone_state.num_satellites != -500 and not self.telemetry_ready['num_satellites']:
+            self.telemetry_ready['num_satellites'] = True
+            self.get_logger().info('GPS satellite data is now valid')
+
+        if self.drone_state.flight_mode != '' and not self.telemetry_ready['flight_mode']:
+            self.telemetry_ready['flight_mode'] = True
+            self.get_logger().info('Flight mode data is now valid')
+
+        if self.drone_state.landed_state != '' and not self.telemetry_ready['landed_state']:
+            self.telemetry_ready['landed_state'] = True
+            self.get_logger().info('Landed state data is now valid')
+
+        # Check if all critical telemetry is ready
+        critical_fields = ['latitude', 'longitude', 'altitude', 'battery_percentage', 'num_satellites']
+        all_critical_ready = all(self.telemetry_ready[field] for field in critical_fields)
+        
+        if all_critical_ready and not self.telemetry_valid:
+            self.telemetry_valid = True
+            self.get_logger().info('All critical telemetry data is now valid')
+            
+        return self.telemetry_valid
 
 
     def telemetry_callback(self, msg):
         """Process incoming telemetry and update state machine"""
-
         # Store latest telemetry
         self.drone_state = msg
 
@@ -70,8 +139,18 @@ class DroneStateMachineNode(Node):
             self.get_logger().info('Received first telemetry message! Publishing drone state...')
             self.received_first_telemetry_flag = True
 
-        # State machine transitions based on telemetry
-        # self.get_logger().info(f"Received telemetry: Latitude {msg.latitude} | Longitude {msg.longitude} | Altitude {msg.altitude} | Armed {msg.armed} | Mode {msg.flight_mode} | Landed State {msg.landed_state} | Battery {msg.battery_percentage}% | In Air: {msg.is_in_air} | ")
+        self.update_state_machine()
+
+    def update_state_machine(self):
+        """Handle all state transitions and requests"""
+        current_state = self.state_machine.current_state.id
+
+        self.check_telemetry_validity()
+
+        # Log state changes
+        if current_state != getattr(self, 'prev_state', None):
+            self.get_logger().info(f'Drone state: {current_state}')
+            self.prev_state = current_state
 
     def publish_drone_state(self):
         """Publish the current drone state"""
@@ -94,6 +173,44 @@ class DroneStateMachineNode(Node):
         msg.current_state = str(self.state_machine.current_state) if self.state_machine.current_state else "UNKNOWN"
 
         self.drone_state_publisher.publish(msg)
+
+    def handle_prepare_for_mission(self, request, response):
+        """Handle prepare for mission service request with all validation inline"""
+        self.get_logger().info(f'Mission preparation request: {request.mission_id}')
+
+        current_state = self.state_machine.current_state.id
+
+        # Fill in current status
+        response.battery_percentage = self.drone_state.battery_percentage
+        response.num_satellites = self.drone_state.num_satellites
+        response.drone_state = current_state
+
+        # Check if all conditions are met for preparation
+        if not self.telemetry_valid:
+            response.success = False
+            response.error_message = "Telemetry not valid yet"
+        elif current_state != 'idle':
+            response.success = False
+            response.error_message = f"Not in idle state: {current_state}"
+        elif self.drone_state.battery_percentage < self.BATTERY_CHARGED_THRESHOLD:
+            response.success = False
+            response.error_message = f"Battery too low: {self.drone_state.battery_percentage}%"
+        elif self.drone_state.num_satellites < self.SATELLITES_LOCKED_THRESHOLD:
+            response.success = False
+            response.error_message = f"Not enough satellites: {self.drone_state.num_satellites}"
+        else:
+            # All checks passed - make the transition
+            try:
+                self.state_machine.prepare_for_flight()
+                response.success = True
+                response.error_message = ""
+                response.drone_state = str(self.state_machine.current_state.id)
+                self.get_logger().info(f'Drone prepared for mission: {request.mission_id}')
+            except Exception as e:
+                response.success = False
+                response.error_message = f"Transition failed: {str(e)}"
+
+        return response
 
 def main():
     rclpy.init()
