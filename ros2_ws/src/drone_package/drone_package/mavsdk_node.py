@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
-from shared_interfaces.msg import DroneState
+from drone_interfaces.msg import Telemetry
 
 # Using friend's threading pattern for asyncio/ROS2 integration
 async def spin(node: Node):
@@ -27,11 +27,11 @@ async def spin(node: Node):
 
 class MAVSDKNode(Node):
     def __init__(self):
-        super().__init__('basic_mavsdk_node')
+        super().__init__('mavsdk_node')
         self.drone = System()  # Create MAVSDK system
 
         # Publisher for drone state
-        self.state_publisher = self.create_publisher(DroneState, 'drone/state', 10)
+        self.telemetry_publisher = self.create_publisher(Telemetry, 'drone/telemetry', 10)
 
         # Telemetry Variables
         self.position = None
@@ -57,7 +57,7 @@ class MAVSDKNode(Node):
         await self.start_telemetry_streams()
 
         # Create timer to publish telemetry
-        self.create_timer(0.5, self.publish_telemetry)
+        self.create_timer(3, self.publish_telemetry)
 
     async def connect_to_drone(self):
         try:
@@ -162,52 +162,52 @@ class MAVSDKNode(Node):
     # ASYNC METHODS END HERE
 
     def publish_telemetry(self):
-        """Publish telemetry as DroneState message"""
+        """Publish telemetry as Telemetry message"""
         # Only publish if we have basic position data
         if not self.position:
             return
 
         try:
-            state_msg = DroneState()
+            telemetry_msg = Telemetry()
 
             # Header with timestamp
-            state_msg.header.stamp = self.get_clock().now().to_msg()
+            telemetry_msg.header.stamp = self.get_clock().now().to_msg()
 
             # Position Data
-            state_msg.latitude = self.position.latitude_deg
-            state_msg.longitude = self.position.longitude_deg
-            state_msg.altitude = self.position.relative_altitude_m
+            telemetry_msg.latitude = self.position.latitude_deg
+            telemetry_msg.longitude = self.position.longitude_deg
+            telemetry_msg.altitude = self.position.relative_altitude_m
 
             # Flight State
-            state_msg.armed = self.armed
-            state_msg.flight_mode = str(self.flight_mode) if self.flight_mode else "UNKNOWN"
-            state_msg.is_in_air = self.in_air
-            state_msg.landed_state = str(self.landed_state) if self.landed_state else "UNKNOWN"
+            telemetry_msg.armed = self.armed
+            telemetry_msg.flight_mode = str(self.flight_mode) if self.flight_mode else "UNKNOWN"
+            telemetry_msg.is_in_air = self.in_air
+            telemetry_msg.landed_state = str(self.landed_state) if self.landed_state else "UNKNOWN"
 
             # GPS Info and Power
-            state_msg.num_satellites = self.num_satellites.num_satellites if self.num_satellites else 0
-            state_msg.battery_percentage = self.battery.remaining_percent if self.battery else 0.0
+            telemetry_msg.num_satellites = self.num_satellites.num_satellites if self.num_satellites else 0
+            telemetry_msg.battery_percentage = self.battery.remaining_percent if self.battery else 0.0
 
             # Motion Data
             if self.velocity:
-                state_msg.velocity_x = self.velocity.north_m_s
-                state_msg.velocity_y = self.velocity.east_m_s
-                state_msg.velocity_z = self.velocity.down_m_s
+                telemetry_msg.velocity_x = self.velocity.north_m_s
+                telemetry_msg.velocity_y = self.velocity.east_m_s
+                telemetry_msg.velocity_z = self.velocity.down_m_s
             else:
-                state_msg.velocity_x = 0.0
-                state_msg.velocity_y = 0.0
-                state_msg.velocity_z = 0.0
+                telemetry_msg.velocity_x = 0.0
+                telemetry_msg.velocity_y = 0.0
+                telemetry_msg.velocity_z = 0.0
 
-            state_msg.current_yaw = self.heading.heading_deg if self.heading else 0.0
+            telemetry_msg.current_yaw = self.heading.heading_deg if self.heading else 0.0
 
             # Mission Status
-            state_msg.mission_complete = self.mission_complete
+            telemetry_msg.mission_complete = self.mission_complete
 
             # Add drone ID
-            if hasattr(state_msg, 'drone_id'):
-                state_msg.drone_id = "drone_001"
+            if hasattr(telemetry_msg, 'drone_id'):
+                telemetry_msg.drone_id = "drone_001"
 
-            self.state_publisher.publish(state_msg)
+            self.telemetry_publisher.publish(telemetry_msg)
 
         except Exception as e:
             self.get_logger().error(f"Error publishing telemetry: {str(e)}")
