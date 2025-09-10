@@ -1,0 +1,9 @@
+# Request
+string mission_id
+Waypoint[] waypoints
+---
+# Response
+bool success
+string error_message
+string drone_state
+int32 num_waypoints_received
