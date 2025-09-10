@@ -9,10 +9,12 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(shared_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Telemetry.msg"
-  DEPENDENCIES std_msgs
+  "srv/UploadMissionMAVSDK.srv"
+  DEPENDENCIES std_msgs shared_interfaces
 )
 ament_export_dependencies(rosidl_default_runtime)
 

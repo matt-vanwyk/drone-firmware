@@ -5,6 +5,7 @@ from statemachine import State, StateMachine
 from shared_interfaces.msg import DroneState
 from shared_interfaces.srv import PrepareForMission, UploadMission
 from drone_interfaces.msg import Telemetry
+from drone_interfaces.srv import UploadMissionMAVSDK
 
 class DroneStateMachine(StateMachine):
     """State machine definitions"""
@@ -48,6 +49,12 @@ class DroneStateMachineNode(Node):
             UploadMission,
             'drone/upload_mission',
             self.handle_upload_mission
+        )
+
+        # Service Client Declarations (mavsdk_node communication)
+        self.upload_mission_client = self.create_client(
+            UploadMissionMAVSDK,
+            'mavsdk/upload_mission'
         )
 
         # Initialize DroneState attributes
@@ -236,16 +243,16 @@ class DroneStateMachineNode(Node):
                 self.current_mission_id = request.mission_id
                 self.current_waypoints = request.waypoints
                 self.state_machine.received_mission()
-                # TODO After this, we need to try and uplaod the mission to the drone
-                # via the mavsdk_node. To do this we will make a service request using
-                # drone/interfaces/srv/UploadMissionMAVSDK.srv (not implemented yet).
-                # Only when we receive a successful response from the mavsdk_node server
-                # will we respond to the base station state machine to say that the mission
-                # upload was successful.
-                response.success = True
-                response.error_message = ""
-                response.drone_state = str(self.state_machine.current_state.id)
-                self.get_logger().info(f'Mission uploaded: {len(request.waypoints)} waypoints')
+
+                if self.upload_to_mavsdk(request.mission_id, request.waypoints):
+                    response.success = True
+                    response.error_message = ""
+                    response.drone_state = str(self.state_machine.current_state.id)
+                    self.get_logger().info(f'Mission uploaded: {len(request.waypoints)} waypoints')
+                else:
+                    response.success = False
+                    response.error_message = "Mission upload failed"
+
             except Exception as e:
                 response.success = False
                 response.error_message = f"Mission upload failed: {str(e)}"
@@ -254,6 +261,42 @@ class DroneStateMachineNode(Node):
 
 ###################################
 # HANDLERS FOR SERVICE REQUESTS FROM BASE STATION STATE MACHINE
+###################################
+
+###################################
+# METHODS FOR CLIENT SERVICE CALLS TO MAVSDK_NODE
+###################################
+
+    def upload_to_mavsdk(self, mission_id, waypoints):
+        """Upload mission to MAVSDK node using async callback"""
+        if not self.upload_mission_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error('MAVSDK upload service not available')
+            return False
+
+        request = UploadMissionMAVSDK.Request()
+        request.mission_id = mission_id
+        request.waypoints = waypoints
+
+        def mavsdk_callback(future):
+            try:
+                response = future.result()
+                if response.success:
+                    self.get_logger().info(f'MAVSDK upload successful: {response.waypoints_uploaded} waypoints')
+                    # Set a flag that can be checked by the service handler
+                    self.mavsdk_upload_success = True
+                else:
+                    self.get_logger().error(f'MAVSDK upload failed: {response.error_message}')
+                    self.mavsdk_upload_success = False
+            except Exception as e:
+                self.get_logger().error(f'MAVSDK service call failed: {str(e)}')
+                self.mavsdk_upload_success = False
+
+        future = self.upload_mission_client.call_async(request)
+        future.add_done_callback(mavsdk_callback)
+        return True  # Indicates async call was initiated successfully
+
+###################################
+# METHODS FOR CLIENT SERVICE CALLS TO MAVSDK_NODE
 ###################################
 
 def main():

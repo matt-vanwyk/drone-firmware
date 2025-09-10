@@ -1,0 +1,6 @@
+shared_interfaces/Waypoint[] waypoints
+string mission_id
+---
+bool success
+string error_message
+int32 waypoints_uploaded

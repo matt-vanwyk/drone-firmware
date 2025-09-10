@@ -7,6 +7,7 @@ from rclpy.node import Node
 from mavsdk import System
 from mavsdk.mission import MissionItem, MissionPlan
 from drone_interfaces.msg import Telemetry
+from drone_interfaces.srv import UploadMissionMAVSDK
 
 # Using friend's threading pattern for asyncio/ROS2 integration
 async def spin(node: Node):
@@ -33,6 +34,13 @@ class MAVSDKNode(Node):
         # Publisher for drone state
         self.telemetry_publisher = self.create_publisher(Telemetry, 'drone/telemetry', 10)
 
+        # Service Server Declarations (for communication with base_station_state_machine)
+        self.upload_mission_service = self.create_service(
+            UploadMissionMAVSDK,
+            'mavsdk/upload_mission',
+            self.handle_upload_mission
+        )
+
         # Telemetry Variables
         self.position = None
         self.armed = False
@@ -48,8 +56,9 @@ class MAVSDKNode(Node):
         self.get_logger().info('MAVSDK Node started')
         self.loop = asyncio.get_event_loop()
 
+    ##########################
     # ASYNC METHODS START HERE
-    ##########################################################
+    ##########################
 
     async def start(self):
         """Initialize connection and run mission"""
@@ -158,8 +167,82 @@ class MAVSDKNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error in heading update: {str(e)}")
 
-    ##########################################################
+    async def upload_mission(self, request):
+        """Async method to upload mission to flight controller"""
+        try:
+            self.get_logger().info(f'Converting {len(request.waypoints)} waypoints to mission plan...')
+
+            # Conevert waypoints to MissionItems
+            mission_items = []
+            for waypoint in request.waypoints:
+                mission_items.append(MissionItem(
+                    latitude_deg = waypoint.latitude,
+                    longitude_deg = waypoint.longitude,
+                    relative_altitude_m = waypoint.altitude,
+                    speed_m_s = waypoint.speed,
+                    is_fly_through = True,
+                    gimbal_pitch_deg = float('nan'),
+                    gimbal_yaw_deg=float('nan'),
+                    camera_action=MissionItem.CameraAction.NONE,
+                    loiter_time_s=float('nan'),
+                    camera_photo_interval_s=float('nan'),
+                    acceptance_radius_m=float('nan'),
+                    yaw_deg=float('nan'),
+                    camera_photo_distance_m=float('nan'),
+                    vehicle_action = MissionItem.VehicleAction.NONE
+                ))
+            
+            mission_plan = MissionPlan(mission_items)
+
+            await self.drone.mission.clear_mission()
+
+            self.get_logger().info('Uploading mission to flight controller...')
+            await self.drone.mission.upload_mission(mission_plan)
+
+            self.get_logger().info(f'Mission {request.mission_id} uploaded successfully to flight controller')
+
+            await self.drone.mission.set_return_to_launch_after_mission(False)
+
+            return {"success": True, "error_message": "", "waypoints_uploaded": 1}
+
+        except Exception as e:
+            self.get_logger().error(f'Mission upload failed: {str(e)}')
+            return {
+                'success': False,
+                'error_message': f'MAVSDK upload failed: {str(e)}',
+                'waypoints_uploaded': 0
+            }
+
+    ##########################
     # ASYNC METHODS END HERE
+    ##########################
+
+###################################
+# HANDLERS FOR SERVICE REQUESTS FROM DRONE STATE MACHINE
+###################################
+
+    def handle_upload_mission(self, request, response):
+        self.get_logger().info(f'Mission upload request: {request.mission_id}')
+
+        future = asyncio.run_coroutine_threadsafe(self.upload_mission(request), self.loop)
+        
+        try:
+            result = future.result(timeout=15.0)
+            response.success = result['success']
+            response.error_message = result['error_message']
+            response.waypoints_uploaded = result['waypoints_uploaded']
+            
+        except Exception as e:
+            self.get_logger().error(f'Upload failed: {str(e)}')
+            response.success = False
+            response.error_message = f'Upload timeout: {str(e)}'
+            response.waypoints_uploaded = 0
+
+        return response
+
+###################################
+# HANDLERS FOR SERVICE REQUESTS FROM DRONE STATE MACHINE
+###################################
 
     def publish_telemetry(self):
         """Publish telemetry as Telemetry message"""
